@@ -31,6 +31,26 @@ Run as root (required to load BPF programs):
 sudo ./user_monitor
 ```
 
+Specify a flush interval (seconds):
+
+```bash
+sudo ./user_monitor -i 5
+```
+
+Whitelist only specific process comm names (task names) using one or more `-c/--comm` flags. When any are supplied, only syscalls from tasks whose `comm` exactly matches a provided name (truncated to 15 chars like the kernel) are monitored. Example monitoring only `nginx` and `redis-server`:
+
+```bash
+sudo ./user_monitor -c nginx -c redis-server
+```
+
+Combine with interval:
+
+```bash
+sudo ./user_monitor -i 2 -c bash -c sshd
+```
+
+If no `-c/--comm` options are given, all processes are monitored (except the monitor itself).
+
 Output
 Every 10 seconds the program prints lines like:
 
@@ -39,3 +59,7 @@ PID: 1234  syscall: sendmsg (47)  count: 10  avg_ms: 0.123  max_ms: 0.456  bytes
 Notes
 - The user program contains a small syscall name map for common syscalls. You can extend `syscall_name()` with additional names or integrate a full syscall table.
 - If bpftool is not available, generate the skeleton header manually or use libbpf's build system.
+
+- By default the user-space monitor writes its own PID into a BPF map so the eBPF program ignores events from the monitor process (prevents the program from monitoring itself). To disable this behavior remove or skip populating the `monitor_pid_map` in `user_monitor.c`.
+
+- Command filtering implementation details: the eBPF side keeps a hash map of allowed `comm` strings (up to 64 entries). A second array map holds a single enable flag. If filtering is enabled and a task's `comm` is not present, the event is skipped early. This minimizes per-event overhead when no filtering is requested (just a single flag check).

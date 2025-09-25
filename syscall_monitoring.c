@@ -52,6 +52,14 @@ struct {
     __type(value, struct syscall_stats);
 } syscall_stats_map SEC(".maps");
 
+// Map: PID of the user-space monitor process to ignore (key=0 -> pid value)
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u32);
+} monitor_pid_map SEC(".maps");
+
 // Map: per-TID syscall entry timestamp
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -59,6 +67,22 @@ struct {
     __type(key, __u32);
     __type(value, __u64);
 } start_ns_map SEC(".maps");
+
+// Map: whitelist of allowed comm names (TASK_COMM_LEN=16). Key is full 16-byte buffer.
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 64);
+    __type(key, char[16]);
+    __type(value, __u8); // value unused, presence implies allowed
+} allowed_comms_map SEC(".maps");
+
+// Map: single flag indicating whether filtering by comm is enabled (key=0)
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, __u32);
+    __type(value, __u8);
+} filter_enabled_map SEC(".maps");
 
 /* We removed the macro because the BPF verifier had trouble; each exit handler
  * below performs the same sequence explicitly: lookup start ts, compute delta,
@@ -84,6 +108,38 @@ struct {
 #define SCID_POLL       16
 #define SCID_PPOLL      17
 #define SCID_EPOLL_WAIT 18
+
+// Helper: return non-zero if current PID should be ignored (monitor process)
+static __always_inline int should_ignore_current_pid(void) {
+    __u32 key = 0;
+    __u32 *mon_pid = bpf_map_lookup_elem(&monitor_pid_map, &key);
+    if (!mon_pid) return 0;
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    __u32 pid = (__u32)(pid_tgid >> 32);
+    return pid == *mon_pid;
+}
+
+// Return non-zero if current task should be filtered out (not monitored)
+static __always_inline int filtered_out(void) {
+    if (should_ignore_current_pid())
+        return 1;
+
+    // If filter not enabled, allow
+    __u32 z = 0;
+    __u8 *enabled = bpf_map_lookup_elem(&filter_enabled_map, &z);
+    if (!enabled || *enabled == 0)
+        return 0;
+
+    char comm[16];
+    if (bpf_get_current_comm(&comm, sizeof(comm)) != 0)
+        return 1; // can't read -> drop
+
+    // Lookup exact comm buffer
+    __u8 *present = bpf_map_lookup_elem(&allowed_comms_map, &comm);
+    if (!present)
+        return 1;
+    return 0;
+}
 
 // Enter handlers: store start timestamp per-TID
 SEC("tracepoint/syscalls/sys_enter_sendmsg")
@@ -256,6 +312,7 @@ int exit_sendmsg(struct trace_event_raw_sys_exit *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
+    if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
     __u64 delta = bpf_ktime_get_ns() - *tsp;
@@ -290,6 +347,7 @@ int exit_sendto(struct trace_event_raw_sys_exit *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
+    if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
     __u64 delta = bpf_ktime_get_ns() - *tsp;
@@ -321,6 +379,7 @@ int exit_recvmsg(struct trace_event_raw_sys_exit *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
+    if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
     __u64 delta = bpf_ktime_get_ns() - *tsp;
@@ -352,6 +411,7 @@ int exit_recvfrom(struct trace_event_raw_sys_exit *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
+    if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
     __u64 delta = bpf_ktime_get_ns() - *tsp;
@@ -383,6 +443,7 @@ int exit_connect(struct trace_event_raw_sys_exit *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
+    if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
     __u64 delta = bpf_ktime_get_ns() - *tsp;
@@ -414,6 +475,7 @@ int exit_close(struct trace_event_raw_sys_exit *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
+    if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
     __u64 delta = bpf_ktime_get_ns() - *tsp;
@@ -445,6 +507,7 @@ int exit_close_range(struct trace_event_raw_sys_exit *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
+    if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
     __u64 delta = bpf_ktime_get_ns() - *tsp;
@@ -476,6 +539,7 @@ int exit_read(struct trace_event_raw_sys_exit *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
+    if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
     __u64 delta = bpf_ktime_get_ns() - *tsp;
@@ -507,6 +571,7 @@ int exit_readv(struct trace_event_raw_sys_exit *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
+    if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
     __u64 delta = bpf_ktime_get_ns() - *tsp;
@@ -538,6 +603,7 @@ int exit_write(struct trace_event_raw_sys_exit *ctx) {
     __u32 tid = (__u32)pid_tgid;
     __s64 ret = 0;
     bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
     __u64 delta = bpf_ktime_get_ns() - *tsp;
@@ -569,6 +635,7 @@ int exit_writev(struct trace_event_raw_sys_exit *ctx) {
     __u32 tid = (__u32)pid_tgid;
     __s64 ret = 0;
     bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
     __u64 delta = bpf_ktime_get_ns() - *tsp;
@@ -600,6 +667,7 @@ int exit_open(struct trace_event_raw_sys_exit *ctx) {
     __u32 tid = (__u32)pid_tgid;
     __s64 ret = 0;
     bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
     __u64 delta = bpf_ktime_get_ns() - *tsp;
@@ -631,6 +699,7 @@ int exit_openat(struct trace_event_raw_sys_exit *ctx) {
     __u32 tid = (__u32)pid_tgid;
     __s64 ret = 0;
     bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
     __u64 delta = bpf_ktime_get_ns() - *tsp;
@@ -662,6 +731,7 @@ int exit_fstat(struct trace_event_raw_sys_exit *ctx) {
     __u32 tid = (__u32)pid_tgid;
     __s64 ret = 0;
     bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
     __u64 delta = bpf_ktime_get_ns() - *tsp;
@@ -693,6 +763,7 @@ int exit_fstatat(struct trace_event_raw_sys_exit *ctx) {
     __u32 tid = (__u32)pid_tgid;
     __s64 ret = 0;
     bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
     __u64 delta = bpf_ktime_get_ns() - *tsp;
@@ -724,6 +795,7 @@ int exit_poll(struct trace_event_raw_sys_exit *ctx) {
     __u32 tid = (__u32)pid_tgid;
     __s64 ret = 0;
     bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
     __u64 delta = bpf_ktime_get_ns() - *tsp;
@@ -755,6 +827,7 @@ int exit_ppoll(struct trace_event_raw_sys_exit *ctx) {
     __u32 tid = (__u32)pid_tgid;
     __s64 ret = 0;
     bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
     __u64 delta = bpf_ktime_get_ns() - *tsp;
@@ -786,6 +859,7 @@ int exit_epoll_wait(struct trace_event_raw_sys_exit *ctx) {
     __u32 tid = (__u32)pid_tgid;
     __s64 ret = 0;
     bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
     __u64 delta = bpf_ktime_get_ns() - *tsp;

@@ -11,9 +11,7 @@
 
 #include "syscall_monitoring.skel.h"
 
-/* Use dlopen to call libcap at runtime when available so this program
- * can still compile on systems without libcap development headers. */
-#include <dlfcn.h>
+/* libcap runtime checks removed to simplify runtime behavior. */
 
 // Use shared syscall id header to avoid duplication/drift
 #include "syscall_ids.h"
@@ -98,14 +96,19 @@ static int syscall_has_bytes(__u32 id) {
 
 
 int print_and_clear_map(int map_fd) {
-    struct syscall_key key, next_key;
+    struct syscall_key prev_key;
+    struct syscall_key key;
+    struct syscall_key next_key;
     struct syscall_stats stats;
 
-    // Iterate map
-    while (bpf_map_get_next_key(map_fd, &key, &next_key) == 0) {
-        if (bpf_map_lookup_elem(map_fd, &next_key, &stats) != 0) {
-            // couldn't read, try to continue
-            memcpy(&key, &next_key, sizeof(key));
+    // Iterate map: start with NULL previous key to get the first entry
+    // then repeatedly get the next key using the last seen key.
+    // This avoids printing multiple times per PID/Call.
+    int res = bpf_map_get_next_key(map_fd, NULL, &key);
+    while (res == 0) {
+        if (bpf_map_lookup_elem(map_fd, &key, &stats) != 0) {
+            // couldn't read this entry, try to advance to next
+            res = bpf_map_get_next_key(map_fd, &key, &key);
             continue;
         }
 
@@ -113,24 +116,40 @@ int print_and_clear_map(int map_fd) {
         if (stats.count)
             avg_ns = (double)stats.sum_ns / (double)stats.count;
 
-        const char *name = syscall_name(next_key.id);
+        const char *name = syscall_name(key.id);
         char name_buf[32];
         if (!name) {
-            snprintf(name_buf, sizeof(name_buf), "sys_%u", next_key.id);
+            snprintf(name_buf, sizeof(name_buf), "sys_%u", key.id);
             name = name_buf;
         }
 
-     if (syscall_has_bytes(next_key.id)) {
-         printf("PID=%u %s count=%llu avg_ms=%.3f max_ms=%.3f bytes=%llu\n",
-             next_key.pid,
+        /* Read /proc/<pid>/comm to get the task's command name (TASK_COMM_LEN=16) */
+        char comm[16] = "-";
+        char comm_path[64];
+        snprintf(comm_path, sizeof(comm_path), "/proc/%u/comm", key.pid);
+        FILE *f = fopen(comm_path, "r");
+        if (f) {
+            if (fgets(comm, sizeof(comm), f) != NULL) {
+                /* strip trailing newline if present */
+                size_t l = strlen(comm);
+                if (l && comm[l-1] == '\n') comm[l-1] = '\0';
+            }
+            fclose(f);
+        }
+
+     if (syscall_has_bytes(key.id)) {
+         printf("PID=%u comm=%s call=%s count=%llu avg_ms=%.3f max_ms=%.3f bytes=%llu\n",
+             key.pid,
+             comm,
              name,
              (unsigned long long)stats.count,
              avg_ns / 1e6,
              (double)stats.max_ns / 1e6,
              (unsigned long long)stats.bytes);
      } else {
-         printf("PID=%u %s count=%llu avg_ms=%.3f max_ms=%.3f\n",
-             next_key.pid,
+         printf("PID=%u comm=%s call=%s count=%llu avg_ms=%.3f max_ms=%.3f\n",
+             key.pid,
+             comm,
              name,
              (unsigned long long)stats.count,
              avg_ns / 1e6,
@@ -138,92 +157,65 @@ int print_and_clear_map(int map_fd) {
      }
 
         // delete entry so stats are flushed
-        if (bpf_map_delete_elem(map_fd, &next_key) != 0) {
-            // couldn't delete, next iteration will try again
+        if (bpf_map_delete_elem(map_fd, &key) != 0) {
+            // couldn't delete, nothing more we can do for this entry
         }
 
-        memcpy(&key, &next_key, sizeof(key));
+        // advance to next key
+        prev_key = key;
+        res = bpf_map_get_next_key(map_fd, &prev_key, &next_key);
+        if (res == 0)
+            key = next_key;
     }
 
     return 0;
 }
 
-/* Try to detect CAP_BPF and CAP_PERFMON at runtime by loading libcap
- * with dlopen. Returns 1 if both effective capabilities are present,
- * 0 otherwise (including when libcap isn't available). */
-static int check_caps(void)
-{
-    /* opaque types */
-    typedef void *cap_t;
-    typedef int cap_value_t;
-    typedef int cap_flag_value_t;
-
-    void *h = dlopen("/lib/x86_64-linux-gnu/libcap.so.2", RTLD_LAZY | RTLD_LOCAL);
-    if (!h)
-        h = dlopen("/lib64/libcap.so.2", RTLD_LAZY | RTLD_LOCAL);
-    if (!h)
-        h = dlopen("libcap.so.2", RTLD_LAZY | RTLD_LOCAL);
-    if (!h)
-        h = dlopen("libcap.so", RTLD_LAZY | RTLD_LOCAL);
-    if (!h)
-        return 0; /* no libcap available */
-
-    cap_t (*cap_get_proc)(void) = (cap_t(*)(void))dlsym(h, "cap_get_proc");
-    int (*cap_get_flag)(cap_t, cap_value_t, int, cap_flag_value_t *) =
-        (int(*)(cap_t, cap_value_t, int, cap_flag_value_t *))dlsym(h, "cap_get_flag");
-    int (*cap_from_name)(const char *, cap_value_t *) =
-        (int(*)(const char *, cap_value_t *))dlsym(h, "cap_from_name");
-    void (*cap_free)(void *) = (void(*)(void *))dlsym(h, "cap_free");
-
-    if (!cap_get_proc || !cap_get_flag || !cap_from_name || !cap_free) {
-        dlclose(h);
-        return 0;
-    }
-
-    cap_t caps = cap_get_proc();
-    if (!caps) {
-        dlclose(h);
-        return 0;
-    }
-
-    cap_value_t val_bpf_idx = -1, val_perf_idx = -1, val_sys_resource_idx = -1;
-    if (cap_from_name("cap_bpf", &val_bpf_idx) != 0 ||
-        cap_from_name("cap_perfmon", &val_perf_idx) != 0 ||
-        cap_from_name("cap_sys_resource", &val_sys_resource_idx) != 0) {
-        cap_free(caps);
-        dlclose(h);
-        return 0;
-    }
-
-    const int CAP_EFFECTIVE = 0; /* libcap enum: CAP_EFFECTIVE */
-    cap_flag_value_t flag_bpf = 0, flag_perf = 0, flag_sys_resource = 0;
-    int ok = 0;
-    if (cap_get_flag(caps, val_bpf_idx, CAP_EFFECTIVE, &flag_bpf) == 0 &&
-        cap_get_flag(caps, val_perf_idx, CAP_EFFECTIVE, &flag_perf) == 0 &&
-        cap_get_flag(caps, val_sys_resource_idx, CAP_EFFECTIVE, &flag_sys_resource) == 0) {
-        if (flag_bpf != 0 && flag_perf != 0 && flag_sys_resource != 0)
-            ok = 1;
-    }
-
-    cap_free(caps);
-    dlclose(h);
-    return ok;
-}
+// Runtime libcap checks removed; permission checks remain when loading/attaching BPF.
 
 int main(int argc, char **argv) {
     struct syscall_monitoring_bpf *skel;
     int err;
+    unsigned int interval = 10; /* seconds, default */
+    // Simple dynamic array of comm filters (max 64 per BPF map definition)
+    const char *comm_filters[64];
+    int comm_filter_count = 0;
+
+    /* parse user arguments: --interval / -i <seconds> */
+    for (int i = 1; i < argc; i++) {
+        if ((strcmp(argv[i], "-i") == 0 || strcmp(argv[i], "--interval") == 0) && i + 1 < argc) {
+            char *endptr = NULL;
+            long val = strtol(argv[i+1], &endptr, 10);
+            if (endptr == argv[i+1] || val <= 0) {
+                fprintf(stderr, "invalid interval '%s'\n", argv[i+1]);
+                return 1;
+            }
+            interval = (unsigned int)val;
+            i++; /* skip value */
+            continue;
+        }
+        if ((strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--comm") == 0) && i + 1 < argc) {
+            if (comm_filter_count >= 64) {
+                fprintf(stderr, "too many -c/--comm filters (max 64)\n");
+                return 1;
+            }
+            comm_filters[comm_filter_count++] = argv[++i];
+            continue;
+        }
+        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            printf("usage: %s [-i|--interval seconds] [-c|--comm name]...\n", argv[0]);
+            printf("  -i, --interval <sec>  Flush/aggregation interval (default %u)\n", interval);
+            printf("  -c, --comm <name>     Only monitor processes whose task comm matches <name>.\n");
+            printf("                       May be supplied multiple times (up to 64). If omitted, monitors all.\n");
+            return 0;
+        }
+    }
 
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
 
-    /* runtime capability check */
-    if (!check_caps()) {
-        if (geteuid() != 0) {
-            fprintf(stderr, "error: this program must be run with CAP_BPF, CAP_PERFMON and CAP_SYS_RESOURCE (or try: sudo %s)\n", argv[0]);
-            return 1;
-        }
-    }
+    /* Note: runtime libcap checks were removed. Permissions errors while
+     * loading or attaching BPF programs will still be reported below. */
 
     skel = syscall_monitoring_bpf__open();
     if (!skel) {
@@ -233,13 +225,36 @@ int main(int argc, char **argv) {
 
     err = syscall_monitoring_bpf__load(skel);
     if (err) {
+        /* libbpf often returns -1 and prints a helpful message to stderr
+         * about the underlying cause; still, provide actionable hints to
+         * the user for common causes: missing capabilities / not running
+         * as root, or RLIMIT_MEMLOCK too low. */
         fprintf(stderr, "failed to load BPF object: %d\n", err);
+        if (errno == EPERM || errno == EACCES) {
+            fprintf(stderr, "       Permission denied while loading BPF object.\n");
+            fprintf(stderr, "       Try running as root: sudo %s\n", argv[0]);
+            fprintf(stderr, "       Or grant capabilities: sudo setcap cap_bpf,cap_perfmon,cap_sys_resource+ep %s\n", argv[0]);
+        } else if (errno == ENOMEM) {
+            fprintf(stderr, "       Insufficient memory or RLIMIT_MEMLOCK too low. Increase with:\n");
+            fprintf(stderr, "         sudo prlimit --pid $$ --memlock=unlimited\n");
+            fprintf(stderr, "       Or add to /etc/security/limits.conf: \"* hard memlock unlimited\"\n");
+        } else {
+            fprintf(stderr, "       See the libbpf output above for details; ensure your kernel supports BPF and that RLIMIT_MEMLOCK is large enough.\n");
+        }
         goto cleanup;
     }
 
     err = syscall_monitoring_bpf__attach(skel);
     if (err) {
-        fprintf(stderr, "failed to attach BPF programs: %d\n", err);
+        if (err == -EACCES || err == -EPERM) {
+            fprintf(stderr, "error: failed to attach BPF programs: permission denied (EACCES/EPERM)\n");
+            fprintf(stderr, "       This usually means the process lacks CAP_BPF/CAP_PERFMON or isn't running as root.\n");
+            fprintf(stderr, "       You can either run as root (sudo %s) or grant capabilities:\n", argv[0]);
+            fprintf(stderr, "         sudo setcap cap_bpf,cap_perfmon,cap_sys_resource+ep %s\n", argv[0]);
+            fprintf(stderr, "       On some distros you may also need to enable tracing/proc fs or kernel config for BPF.\n");
+        } else {
+            fprintf(stderr, "failed to attach BPF programs: %d\n", err);
+        }
         goto cleanup;
     }
 
@@ -249,10 +264,80 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
 
-    printf("syscall monitor started, flushing every 10s. Ctrl-C to exit.\n");
+    /* Set our own PID into the BPF monitor_pid_map so the BPF program
+     * ignores this process (prevents the monitor from monitoring itself).
+     */
+    int mon_map_fd = bpf_map__fd(skel->maps.monitor_pid_map);
+    if (mon_map_fd >= 0) {
+        __u32 key = 0;
+        __u32 val = (__u32)getpid();
+        if (bpf_map_update_elem(mon_map_fd, &key, &val, BPF_ANY) != 0) {
+            fprintf(stderr, "warning: failed to populate monitor_pid_map: %s\n", strerror(errno));
+            /* Not fatal: continue without self-filtering */
+        }
+        else {
+            /* read back for verification */
+            __u32 readback = 0;
+            if (bpf_map_lookup_elem(mon_map_fd, &key, &readback) == 0) {
+                fprintf(stderr, "monitor_pid_map populated with PID=%u\n", readback);
+            } else {
+                fprintf(stderr, "warning: failed to read back monitor_pid_map: %s\n", strerror(errno));
+            }
+        }
+    } else {
+        /* Not fatal: continue without self-filtering */
+    }
+
+    /* Remove any existing stats for the monitor PID so we don't print
+     * events that were recorded before we populated the monitor map. */
+    if (mon_map_fd >= 0 && map_fd >= 0) {
+        __u32 key0 = 0;
+        __u32 readback = 0;
+        if (bpf_map_lookup_elem(mon_map_fd, &key0, &readback) == 0) {
+            struct syscall_key skey;
+            struct syscall_key sknext;
+            int r = bpf_map_get_next_key(map_fd, NULL, &skey);
+            while (r == 0) {
+                if (skey.pid == readback) {
+                    bpf_map_delete_elem(map_fd, &skey);
+                }
+                r = bpf_map_get_next_key(map_fd, &skey, &sknext);
+                if (r == 0)
+                    skey = sknext;
+            }
+        }
+    }
+
+    // Populate allowed comms map if filters provided
+    if (comm_filter_count > 0) {
+        int comm_map_fd = bpf_map__fd(skel->maps.allowed_comms_map);
+        int filter_flag_fd = bpf_map__fd(skel->maps.filter_enabled_map);
+        if (comm_map_fd < 0 || filter_flag_fd < 0) {
+            fprintf(stderr, "error: BPF object missing required maps for comm filtering\n");
+            goto cleanup;
+        }
+        __u32 zero = 0; __u8 one = 1;
+        if (bpf_map_update_elem(filter_flag_fd, &zero, &one, BPF_ANY) != 0) {
+            fprintf(stderr, "warning: failed to enable comm filtering: %s\n", strerror(errno));
+        }
+        for (int j = 0; j < comm_filter_count; j++) {
+            char key[16] = {0};
+            size_t len = strlen(comm_filters[j]);
+            if (len >= sizeof(key)) len = sizeof(key) - 1; // truncate silently to match task comm behavior
+            memcpy(key, comm_filters[j], len);
+            __u8 val = 1;
+            if (bpf_map_update_elem(comm_map_fd, &key, &val, BPF_ANY) != 0) {
+                fprintf(stderr, "warning: failed adding comm filter '%s': %s\n", comm_filters[j], strerror(errno));
+            }
+        }
+    }
+
+    printf("syscall monitor started, flushing every %us%s. Ctrl-C to exit.\n",
+           interval,
+           comm_filter_count ? " (filtered by comm)" : "");
 
     while (!exiting) {
-        for (int i = 0; i < 10 && !exiting; i++)
+        for (unsigned int i = 0; i < interval && !exiting; i++)
             sleep(1);
 
         if (exiting) break;
