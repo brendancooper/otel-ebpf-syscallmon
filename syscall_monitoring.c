@@ -1,36 +1,10 @@
-#include <linux/bpf.h>
-#include <linux/ptrace.h>
-#include <linux/uio.h>
-#include <linux/socket.h>
+#include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
+#include <bpf/bpf_core_read.h>
 
-// Local minimal tracepoint structs (kernel headers may not expose full defs here)
-struct trace_event_raw_sys_enter {
-    __u64 args[6];
-    __u32 id;
-};
+/* Using CO-RE tracepoint context structs from vmlinux.h; remove local copies */
 
-struct trace_event_raw_sys_exit {
-    __s64 ret;
-    __u64 args[6];
-    __u32 id;
-};
-
-// Minimal user-space msghdr / iovec representations for reading from user memory
-struct user_iovec {
-    __u64 iov_base;
-    __u64 iov_len;
-};
-
-struct user_msghdr {
-    __u64 msg_name;
-    __u64 msg_namelen;
-    __u64 msg_iov;    // pointer
-    __u64 msg_iovlen;
-    __u64 msg_control;
-    __u64 msg_controllen;
-    __u64 msg_flags;
-};
+// Removed duplicate user_iovec/user_msghdr definitions (provided by vmlinux.h)
 
 struct syscall_stats {
     __u64 count;
@@ -307,8 +281,7 @@ int enter_epoll_wait(struct trace_event_raw_sys_enter *ctx) {
 // Exit handlers: update stats with ID and bytes from ctx->ret when present
 SEC("tracepoint/syscalls/sys_exit_sendmsg")
 int exit_sendmsg(struct trace_event_raw_sys_exit *ctx) {
-    __s64 ret = 0;
-    bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    long ret = ctx->ret;
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
@@ -342,8 +315,7 @@ int exit_sendmsg(struct trace_event_raw_sys_exit *ctx) {
 
 SEC("tracepoint/syscalls/sys_exit_sendto")
 int exit_sendto(struct trace_event_raw_sys_exit *ctx) {
-    __s64 ret = 0;
-    bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    long ret = ctx->ret;
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
@@ -374,8 +346,7 @@ int exit_sendto(struct trace_event_raw_sys_exit *ctx) {
 
 SEC("tracepoint/syscalls/sys_exit_recvmsg")
 int exit_recvmsg(struct trace_event_raw_sys_exit *ctx) {
-    __s64 ret = 0;
-    bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    long ret = ctx->ret;
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
@@ -406,8 +377,7 @@ int exit_recvmsg(struct trace_event_raw_sys_exit *ctx) {
 
 SEC("tracepoint/syscalls/sys_exit_recvfrom")
 int exit_recvfrom(struct trace_event_raw_sys_exit *ctx) {
-    __s64 ret = 0;
-    bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    long ret = ctx->ret;
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
@@ -438,8 +408,7 @@ int exit_recvfrom(struct trace_event_raw_sys_exit *ctx) {
 
 SEC("tracepoint/syscalls/sys_exit_connect")
 int exit_connect(struct trace_event_raw_sys_exit *ctx) {
-    __s64 ret = 0;
-    bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    long ret = ctx->ret;
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
@@ -470,8 +439,7 @@ int exit_connect(struct trace_event_raw_sys_exit *ctx) {
 
 SEC("tracepoint/syscalls/sys_exit_close")
 int exit_close(struct trace_event_raw_sys_exit *ctx) {
-    __s64 ret = 0;
-    bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    long ret = ctx->ret;
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
@@ -502,8 +470,7 @@ int exit_close(struct trace_event_raw_sys_exit *ctx) {
 
 SEC("tracepoint/syscalls/sys_exit_close_range")
 int exit_close_range(struct trace_event_raw_sys_exit *ctx) {
-    __s64 ret = 0;
-    bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    long ret = ctx->ret;
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
@@ -534,8 +501,7 @@ int exit_close_range(struct trace_event_raw_sys_exit *ctx) {
 
 SEC("tracepoint/syscalls/sys_exit_read")
 int exit_read(struct trace_event_raw_sys_exit *ctx) {
-    __s64 ret = 0;
-    bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    long ret = ctx->ret;
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
@@ -566,8 +532,7 @@ int exit_read(struct trace_event_raw_sys_exit *ctx) {
 
 SEC("tracepoint/syscalls/sys_exit_readv")
 int exit_readv(struct trace_event_raw_sys_exit *ctx) {
-    __s64 ret = 0;
-    bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    long ret = ctx->ret;
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
@@ -601,8 +566,7 @@ int exit_write(struct trace_event_raw_sys_exit *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
-    __s64 ret = 0;
-    bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    long ret = ctx->ret;
     if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
@@ -633,8 +597,7 @@ int exit_writev(struct trace_event_raw_sys_exit *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
-    __s64 ret = 0;
-    bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    long ret = ctx->ret;
     if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
@@ -665,8 +628,7 @@ int exit_open(struct trace_event_raw_sys_exit *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
-    __s64 ret = 0;
-    bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    long ret = ctx->ret;
     if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
@@ -697,8 +659,7 @@ int exit_openat(struct trace_event_raw_sys_exit *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
-    __s64 ret = 0;
-    bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    long ret = ctx->ret;
     if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
@@ -729,8 +690,7 @@ int exit_fstat(struct trace_event_raw_sys_exit *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
-    __s64 ret = 0;
-    bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    long ret = ctx->ret;
     if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
@@ -761,8 +721,7 @@ int exit_fstatat(struct trace_event_raw_sys_exit *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
-    __s64 ret = 0;
-    bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    long ret = ctx->ret;
     if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
@@ -793,8 +752,7 @@ int exit_poll(struct trace_event_raw_sys_exit *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
-    __s64 ret = 0;
-    bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    long ret = ctx->ret;
     if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
@@ -825,8 +783,7 @@ int exit_ppoll(struct trace_event_raw_sys_exit *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
-    __s64 ret = 0;
-    bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    long ret = ctx->ret;
     if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
@@ -857,8 +814,7 @@ int exit_epoll_wait(struct trace_event_raw_sys_exit *ctx) {
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     __u32 pid = (__u32)(pid_tgid >> 32);
     __u32 tid = (__u32)pid_tgid;
-    __s64 ret = 0;
-    bpf_probe_read(&ret, sizeof(ret), &ctx->ret);
+    long ret = ctx->ret;
     if (filtered_out()) return 0;
     __u64 *tsp = bpf_map_lookup_elem(&start_ns_map, &tid);
     if (!tsp) return 0;
