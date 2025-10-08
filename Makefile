@@ -23,8 +23,9 @@ vmlinux.h:
 $(BPF_OBJ): $(BPF_C) vmlinux.h
 	$(BPF_CLANG) -target bpf -c $< -o $@ $(BPF_CFLAGS)
 
-$(USER): user_monitor.c syscall_monitoring.skel.h
-	$(CC) -O2 -g user_monitor.c -o $(USER) $(LIBBPF_CFLAGS) $(LIBBPF_LDFLAGS)
+$(USER): user_monitor.go $(BPF_OBJ)
+	GO111MODULE=on go mod tidy
+	GO111MODULE=on CGO_ENABLED=0 go build -o $(USER) user_monitor.go
 
 syscall_monitoring.skel.h: $(BPF_OBJ)
 	bpftool gen skeleton $(BPF_OBJ) > $@
