@@ -9,7 +9,7 @@ LIBBPF_LDFLAGS ?= $(shell pkg-config --libs libbpf 2>/dev/null || echo "-lbpf -l
 
 BPF_OBJ = syscall_monitoring.bpf.o
 BPF_C = syscall_monitoring.c
-USER = user_monitor
+USER = syscall_monitor
 
 .PHONY: all clean
 
@@ -23,12 +23,10 @@ vmlinux.h:
 $(BPF_OBJ): $(BPF_C) vmlinux.h
 	$(BPF_CLANG) -target bpf -c $< -o $@ $(BPF_CFLAGS)
 
-$(USER): user_monitor.go $(BPF_OBJ)
-	GO111MODULE=on go mod tidy
-	GO111MODULE=on CGO_ENABLED=0 go build -o $(USER) user_monitor.go
 
-syscall_monitoring.skel.h: $(BPF_OBJ)
-	bpftool gen skeleton $(BPF_OBJ) > $@
+$(USER): syscall_monitor.go $(BPF_OBJ)
+	GO111MODULE=on go mod tidy
+	GO111MODULE=on CGO_ENABLED=0 go build -o $(USER) syscall_monitor.go
 
 clean:
-	rm -f $(BPF_OBJ) $(USER) syscall_monitoring.skel.h vmlinux.h
+	rm -f $(BPF_OBJ) $(USER) vmlinux.h
