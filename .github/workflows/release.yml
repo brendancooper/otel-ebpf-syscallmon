@@ -1,0 +1,101 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            llvm \
+            make \
+            pkg-config \
+            libelf-dev \
+            zlib1g-dev \
+            libbpf-dev \
+            bpftool
+
+      - name: Build binaries with Makefile
+        run: |
+          make clean
+          make all
+
+      - name: Generate release notes
+        id: release_notes
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const tagName = context.ref.replace('refs/tags/', '');
+            const response = await github.rest.repos.generateReleaseNotes({
+              owner,
+              repo,
+              tag_name: tagName,
+              target_commitish: context.sha
+            });
+
+            let body = response.data.body || '';
+            const previousTag = response.data.previous_tag_name;
+
+            if (previousTag) {
+              const compare = await github.rest.repos.compareCommitsWithBasehead({
+                owner,
+                repo,
+                basehead: `${previousTag}...${tagName}`
+              });
+
+              if (compare.data.commits?.length) {
+                body += `\n\n## Changes`; 
+                for (const commit of compare.data.commits) {
+                  const subject = commit.commit.message.split('\n')[0];
+                  const sha = commit.sha.substring(0, 7);
+                  body += `\n- ${subject} (${sha})`;
+                }
+              }
+            }
+
+            if (!body.trim()) {
+              body = `Release ${tagName}`;
+            }
+
+            return { body };
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: syscall-monitor-build
+          path: |
+            syscall_monitor
+            syscall_monitoring.bpf.o
+            vmlinux.h
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body: ${{ steps.release_notes.outputs.body }}
+          files: |
+            syscall_monitor
+            syscall_monitoring.bpf.o
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
