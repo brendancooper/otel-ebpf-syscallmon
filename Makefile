@@ -1,7 +1,7 @@
 # Minimal Makefile for building the BPF object and user program
 
 BPF_CLANG ?= clang
-BPF_CFLAGS ?= -O2 -g -D__KERNEL__ -D__ASM_SYSREG_H -D__TARGET_ARCH_x86 -I/usr/include -I/usr/include/x86_64-linux-gnu -I.
+BPF_CFLAGS ?= -O2 -g -D__KERNEL__ -D__ASM_SYSREG_H -D__TARGET_ARCH_x86 -I/usr/include -I/usr/include/x86_64-linux-gnu -I/usr/include/bpf -I.
 LIBBPF_CFLAGS ?= $(shell pkg-config --cflags libbpf 2>/dev/null || echo "-I/usr/include -I/usr/include/x86_64-linux-gnu")
 LIBBPF_LDFLAGS ?= $(shell pkg-config --libs libbpf 2>/dev/null || echo "-lbpf -lelf -lz -pthread")
 
