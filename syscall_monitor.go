@@ -450,51 +450,38 @@ func exportOTLPJSON(ctx context.Context, endpoint string, entries []MetricEntry,
 		}
 	}
 
-	// For each MetricEntry, create separate Gauge metrics: count, avg_ms, max_ms, bytes (if present)
+	// Group datapoints by metric name to reduce the number of metric objects.
+	metricMap := make(map[string]*otlpMetric)
+	addDP := func(name, desc, unit string, dp otlpGaugeDP) {
+		m, ok := metricMap[name]
+		if !ok {
+			m = &otlpMetric{Name: name, Description: desc, Unit: unit, Gauge: &otlpGauge{DataPoints: []otlpGaugeDP{}}}
+			metricMap[name] = m
+		}
+		m.Gauge.DataPoints = append(m.Gauge.DataPoints, dp)
+	}
+
 	for _, e := range entries {
 		attrs := makeAttrs(e)
 
-		// count (int)
 		countVal := int64(e.Count)
-		countMetric := otlpMetric{
-			Name: "syscall_count",
-			Description: "count of syscalls",
-			Unit: "1",
-			Gauge: &otlpGauge{DataPoints: []otlpGaugeDP{{Attributes: attrs, StartTimeUnixNano: start, TimeUnixNano: now, AsInt: &countVal}}},
-		}
-		scopeMetrics.Metrics = append(scopeMetrics.Metrics, countMetric)
+		addDP("syscall_count", "count of syscalls", "count", otlpGaugeDP{Attributes: attrs, StartTimeUnixNano: start, TimeUnixNano: now, AsInt: &countVal})
 
-		// avg_ms (double)
 		avg := e.AvgMs
-		avgMetric := otlpMetric{
-			Name: "syscall_avg_ms",
-			Description: "average syscall latency in ms",
-			Unit: "ms",
-			Gauge: &otlpGauge{DataPoints: []otlpGaugeDP{{Attributes: attrs, StartTimeUnixNano: start, TimeUnixNano: now, AsDouble: &avg}}},
-		}
-		scopeMetrics.Metrics = append(scopeMetrics.Metrics, avgMetric)
+		addDP("syscall_avg_ms", "average syscall latency in ms", "ms", otlpGaugeDP{Attributes: attrs, StartTimeUnixNano: start, TimeUnixNano: now, AsDouble: &avg})
 
-		// max_ms (double)
 		mx := e.MaxMs
-		maxMetric := otlpMetric{
-			Name: "syscall_max_ms",
-			Description: "max syscall latency in ms",
-			Unit: "ms",
-			Gauge: &otlpGauge{DataPoints: []otlpGaugeDP{{Attributes: attrs, StartTimeUnixNano: start, TimeUnixNano: now, AsDouble: &mx}}},
-		}
-		scopeMetrics.Metrics = append(scopeMetrics.Metrics, maxMetric)
+		addDP("syscall_max_ms", "max syscall latency in ms", "ms", otlpGaugeDP{Attributes: attrs, StartTimeUnixNano: start, TimeUnixNano: now, AsDouble: &mx})
 
-		// bytes (int) if present and relevant
 		if scHasBytes(e.ID) && e.Bytes > 0 {
 			bval := int64(e.Bytes)
-			bytesMetric := otlpMetric{
-				Name: "syscall_bytes",
-				Description: "bytes transferred by syscall",
-				Unit: "By",
-				Gauge: &otlpGauge{DataPoints: []otlpGaugeDP{{Attributes: attrs, StartTimeUnixNano: start, TimeUnixNano: now, AsInt: &bval}}},
-			}
-			scopeMetrics.Metrics = append(scopeMetrics.Metrics, bytesMetric)
+			addDP("syscall_bytes", "bytes transferred by syscall", "By", otlpGaugeDP{Attributes: attrs, StartTimeUnixNano: start, TimeUnixNano: now, AsInt: &bval})
 		}
+	}
+
+	// Convert metricMap into the slice expected by OTLP envelope
+	for _, m := range metricMap {
+		scopeMetrics.Metrics = append(scopeMetrics.Metrics, *m)
 	}
 
 	payload, err := json.Marshal(env)
