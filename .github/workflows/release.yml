@@ -29,11 +29,26 @@ jobs:
           sudo apt-get install -y \
             build-essential \
             clang \
+            libbpf-dev \
+            libcap-dev \
+            libelf-dev \
             llvm \
             make \
             pkg-config \
             zlib1g-dev \
             linux-tools-common
+
+          KERNEL_RELEASE="$(uname -r)"
+          if ! sudo apt-get install -y "linux-tools-${KERNEL_RELEASE}"; then
+            sudo apt-get install -y linux-tools-generic linux-cloud-tools-generic || true
+          fi
+
+          BPFT_TOOL="$(find /usr/lib -maxdepth 2 -path '*/linux-tools-*' -name bpftool -print | head -n1)"
+          if [ -n "${BPFT_TOOL}" ]; then
+            sudo ln -sf "${BPFT_TOOL}" /usr/local/bin/bpftool
+          fi
+
+          bpftool version
 
       - name: Build binaries with Makefile
         run: |
