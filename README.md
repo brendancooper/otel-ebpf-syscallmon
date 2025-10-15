@@ -89,12 +89,3 @@ NB: Even non-root with the correct `setcap` capabilities, it will fail because t
 - If a tracepoint isn't available on your kernel (rare), the Go userspace will skip attaching that tracepoint and log a notice. If you prefer a hard-fail when tracepoints are missing, open an issue or request a change and I can add that behavior.
 - If you see "iteration aborted" errors in earlier runs, update to the latest code in this repo; deletions are performed after iteration to avoid aborts.
 
-Notes about removed C code
--------------------------
-The original libbpf C userspace (`user_monitor.c`) and associated generated skeleton (`syscall_monitoring.skel.h`) and header (`syscall_ids.h`) were removed in favor of the Go implementation (`syscall_monitor.go`). The BPF program itself remains in C (`syscall_monitoring.c`) and is compiled to `syscall_monitoring.bpf.o`.
-
-Further work
-------------
-- Add a `-json` option to emit machine-readable output.
-- Add an optional `--must-have-tracepoints` option to fail when expected tracepoints are absent.
-- Add tests for the map iteration/printing logic (unit tests around the formatting code).
