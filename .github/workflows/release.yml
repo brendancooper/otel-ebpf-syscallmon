@@ -103,7 +103,6 @@ jobs:
           path: |
             syscall_monitor
             syscall_monitoring.bpf.o
-            vmlinux.h
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2

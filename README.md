@@ -48,6 +48,8 @@ Options
 -------
 - `-i`, `--interval <seconds>`: flush and print aggregated stats every N seconds (default: 10).
 - `-c`, `--comm <name>`: add a task `comm` filter (repeatable). Only processes whose `/proc/<pid>/comm` matches any supplied name will be monitored. Names are truncated to 16 bytes to match kernel TASK_COMM_LEN.
+ - `--otlp-endpoint <url>`: when provided, the monitor will POST aggregated metrics as an OTLP/JSON-style payload to this HTTP endpoint instead of printing to stdout. If the URL has no path the client will POST to `/v1/metrics`. Examples: `http://collector:4318`, `https://otel-collector.example/api`.
+ - `--otlp-debug`: enable additional debug logging for OTLP exports (logs the JSON payload and response status/body). Useful when configuring a collector or troubleshooting ingestion problems.
 
 Example
 -------
@@ -61,6 +63,18 @@ Only monitor `sshd` and `nginx`:
 
 ```bash
 sudo ./syscall_monitor -i 5 -c sshd -c nginx
+```
+
+Send metrics to an OTLP HTTP collector (instead of stdout):
+
+```bash
+sudo ./syscall_monitor --otlp-endpoint http://collector:4318
+```
+
+Enable OTLP debug logging to print the JSON payload and collector responses:
+
+```bash
+sudo ./syscall_monitor --otlp-endpoint http://collector:4318 --otlp-debug
 ```
 
 What the monitor prints
