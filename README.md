@@ -6,7 +6,7 @@ This repository contains an eBPF program (`syscall_monitoring.c`) and a Go-based
 - Aggregates per-PID, per-syscall statistics (count, total latency, max latency, bytes for I/O calls) in the kernel via BPF maps.
 - Periodically reads and clears those stats and prints human-readable lines to stdout.
 
-The original libbpf/C userspace was replaced with a Go implementation that uses `github.com/cilium/ebpf` to load and attach the pre-built BPF object (`syscall_monitoring.bpf.o`).
+The original libbpf/C version was replaced with a Go implementation that uses `github.com/cilium/ebpf` to load and attach the pre-built BPF object (`syscall_monitoring.bpf.o`).
 
 Requirements
 ------------
@@ -29,7 +29,7 @@ This will produce:
 
 Run
 ---
-`user_monitor` needs elevated privileges to attach BPF programs. Either run as root or grant the needed capabilities:
+`user_monitor` needs elevated privileges to attach BPF programs. Currently, you must run the program as root because even if you grant the specific capabilities 
 
 As root:
 
@@ -53,16 +53,16 @@ Options
 
 Example
 -------
-Watch all processes, flushing every 5s:
+Watch all processes, flushing every 30s:
 
 ```bash
-sudo ./syscall_monitor -i 5
+sudo ./syscall_monitor -i 30
 ```
 
 Only monitor `sshd` and `nginx`:
 
 ```bash
-sudo ./syscall_monitor -i 5 -c sshd -c nginx
+sudo ./syscall_monitor -i 30 -c sshd -c nginx
 ```
 
 Send metrics to an OTLP HTTP collector (instead of stdout):
@@ -77,9 +77,9 @@ Enable OTLP debug logging to print the JSON payload and collector responses:
 sudo ./syscall_monitor --otlp-endpoint http://collector:4318 --otlp-debug
 ```
 
-What the monitor prints
+Output
 ----------------------
-Each flush prints lines in one of two formats:
+Each STDOUT flush prints lines in one of two formats:
 
 - For syscalls that include a meaningful byte count (I/O):
 
@@ -88,6 +88,7 @@ Each flush prints lines in one of two formats:
 - For other syscalls:
 
   PID=<pid> comm=<comm> call=<name> count=<n> avg_ms=<avg latency ms> max_ms=<max latency ms>
+When OTLP output is enable, the monitor sends OTel-Compatible JSON payloads via HTTP. Protobuf over GRPC or HTTP is not implemented
 
 Maps used by the BPF program
 ----------------------------
