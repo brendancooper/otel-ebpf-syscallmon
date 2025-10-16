@@ -101,6 +101,6 @@ Troubleshooting
 ---------------
 - Permission errors when creating or attaching BPF programs usually mean you need to run as root or give the binary the required capabilities. See the `setcap` example above.
 NB: Even non-root with the correct `setcap` capabilities, it will fail because the program currently requires access to /sys/kernel/tracing. Mounting this directory as non-kernel adds major security holes.
-- If a tracepoint isn't available on your kernel (rare), the Go userspace will skip attaching that tracepoint and log a notice. If you prefer a hard-fail when tracepoints are missing, open an issue or request a change and I can add that behavior.
+- If a tracepoint isn't available on your kernel (rare), the Go userspace will skip attaching that tracepoint and log a notice. 
 - If you see "iteration aborted" errors in earlier runs, update to the latest code in this repo; deletions are performed after iteration to avoid aborts.
 
