@@ -1,0 +1,29 @@
+[Unit]
+Description=Syscall Monitor eBPF Agent
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/otel-ebpf/syscall_monitor -c tomcat -i 30 -otlp-endpoint http://testendpoint:4318
+WorkingDirectory=/opt/otel-ebpf
+User=root
+
+# Restart policy
+Restart=always
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Resource limits
+LimitNOFILE=65535
+
+# (Optional) Environment variables
+# Environment="LOG_LEVEL=info"
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
