@@ -26,7 +26,7 @@ $(BPF_OBJ): $(BPF_C) vmlinux.h
 
 $(USER): syscall_monitor.go $(BPF_OBJ)
 	GO111MODULE=on go mod tidy
-	GO111MODULE=on CGO_ENABLED=0 go build -o $(USER) syscall_monitor.go
+	GO111MODULE=on CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o $(USER) syscall_monitor.go
 
 clean:
 	rm -f $(BPF_OBJ) $(USER) vmlinux.h

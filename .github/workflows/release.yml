@@ -50,14 +50,44 @@ jobs:
 
           bpftool version
 
+      - name: Compute build metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF##*/}"
+          SHA="${GITHUB_SHA}"
+          TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          BUILD_ID="${TAG}-${GITHUB_RUN_NUMBER}-${SHA:0:7}"
+          echo "TAG=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "SHA=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "TIME=${TIME}" >> "$GITHUB_OUTPUT"
+          echo "BUILD_ID=${BUILD_ID}" >> "$GITHUB_OUTPUT"
+          # ldflags for go build
+          echo "LDFLAGS=-X 'main.Version=${TAG}' -X 'main.BuildID=${BUILD_ID}' -X 'main.Commit=${SHA}' -X 'main.BuildTime=${TIME}'" >> "$GITHUB_OUTPUT"
+
       - name: Build binaries with Makefile
+        env:
+          LDFLAGS: ${{ steps.meta.outputs.LDFLAGS }}
         run: |
           make clean
           make all
 
+      - name: Capture build info from binary
+        id: buildinfo
+        shell: bash
+        run: |
+          set -euo pipefail
+          INFO=$(./syscall_monitor -version)
+          echo "$INFO" | tee buildinfo.txt
+          # Expose as output and env-compatible
+          echo "BUILD_INFO=$INFO" >> "$GITHUB_OUTPUT"
+
       - name: Generate release notes
         id: release_notes
         uses: actions/github-script@v7
+        env:
+          BUILD_INFO: ${{ steps.buildinfo.outputs.BUILD_INFO }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -88,6 +118,11 @@ jobs:
                   body += `\n- ${subject} (${sha})`;
                 }
               }
+            }
+
+            const buildInfo = process.env.BUILD_INFO || '';
+            if (buildInfo) {
+              body += `\n\n## Build Info\n${buildInfo}`;
             }
 
             if (!body.trim()) {

@@ -25,6 +25,14 @@ import (
 	"bytes"
 )
 
+// Build metadata populated via -ldflags at build time
+var (
+	Version   = "dev"
+	BuildID   = ""
+	Commit    = ""
+	BuildTime = ""
+)
+
 // Keep in sync with BPF-side structs and IDs.
 type syscallStats struct {
 	Count uint64
@@ -132,10 +140,18 @@ func main() {
 	flag.StringVar(&otlpEndpoint, "otlp-endpoint", "", "Export metrics to this OTLP HTTP endpoint (e.g. http://collector:4318)")
 	var otlpDebug bool
 	flag.BoolVar(&otlpDebug, "otlp-debug", false, "Enable debug logging for OTLP exporter (logs HTTP status and body)")
+	var showVersion bool
+	flag.BoolVar(&showVersion, "version", false, "Print version/build info and exit")
+	flag.BoolVar(&showVersion, "V", false, "Print version/build info and exit")
 	var withArgs bool
 	flag.BoolVar(&withArgs, "with-args", false, "Include process command-line arguments from /proc/<pid>/cmdline (best-effort)")
 	flag.BoolVar(&withArgs, "a", false, "Include process command-line arguments from /proc/<pid>/cmdline (best-effort)")
 	flag.Parse()
+
+	if showVersion {
+		fmt.Printf("syscall_monitor version=%s build=%s commit=%s time=%s\n", Version, BuildID, Commit, BuildTime)
+		return
+	}
 
 	// Bump RLIMIT_MEMLOCK for older kernels
 	_ = rlimit.RemoveMemlock()
