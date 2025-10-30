@@ -174,51 +174,6 @@ func main() {
 	}
 	defer coll.Close()
 
-	// Attach tracepoint programs. Iterate the loaded collection's programs
-	// (coll.Programs) and derive the tracepoint event name from the
-	// program name. Use an exceptions map for cases where the tracepoint
-	// name differs from the simple convention (e.g. fstat -> newfstat).
-	var links []link.Link
-	exceptions := map[string]string{
-		"enter_fstat":  "sys_enter_newfstat",
-		"exit_fstat":   "sys_exit_newfstat",
-		"enter_fstatat": "sys_enter_newfstatat",
-		"exit_fstatat":  "sys_exit_newfstatat",
-	}
-
-	for name, prog := range coll.Programs {
-		var ev string
-		if e, ok := exceptions[name]; ok {
-			ev = e
-		} else if strings.HasPrefix(name, "enter_") {
-			ev = "sys_enter_" + strings.TrimPrefix(name, "enter_")
-		} else if strings.HasPrefix(name, "exit_") {
-			ev = "sys_exit_" + strings.TrimPrefix(name, "exit_")
-		} else {
-			// Not a tracepoint program we expect to attach
-			continue
-		}
-
-		cat := "syscalls"
-		evPath := filepath.Join("/sys/kernel/tracing/events", cat, ev, "id")
-		if _, err := os.Stat(evPath); err != nil {
-			log.Printf("skipping attach syscalls/%s via program %s: tracepoint not present (%v)", ev, name, err)
-			continue
-		}
-
-		l, err := link.Tracepoint(cat, ev, prog, nil)
-		if err != nil {
-			log.Printf("attach syscalls/%s via program %s failed: %v", ev, name, err)
-			continue
-		}
-		links = append(links, l)
-	}
-	defer func() {
-		for _, l := range links {
-			_ = l.Close()
-		}
-	}()
-
 	// Convenience handles for maps we need to touch directly
 	statsMap := coll.Maps["syscall_stats_map"]
 	monMap := coll.Maps["monitor_pid_map"]
@@ -260,6 +215,49 @@ func main() {
 			}
 		}
 	}
+
+	// Attach tracepoint programs AFTER filters and monitor PID are configured to
+	// ensure filtering applies from the very first event.
+	var links []link.Link
+	exceptions := map[string]string{
+		"enter_fstat":  "sys_enter_newfstat",
+		"exit_fstat":   "sys_exit_newfstat",
+		"enter_fstatat": "sys_enter_newfstatat",
+		"exit_fstatat":  "sys_exit_newfstatat",
+	}
+
+	for name, prog := range coll.Programs {
+		var ev string
+		if e, ok := exceptions[name]; ok {
+			ev = e
+		} else if strings.HasPrefix(name, "enter_") {
+			ev = "sys_enter_" + strings.TrimPrefix(name, "enter_")
+		} else if strings.HasPrefix(name, "exit_") {
+			ev = "sys_exit_" + strings.TrimPrefix(name, "exit_")
+		} else {
+			// Not a tracepoint program we expect to attach
+			continue
+		}
+
+		cat := "syscalls"
+		evPath := filepath.Join("/sys/kernel/tracing/events", cat, ev, "id")
+		if _, err := os.Stat(evPath); err != nil {
+			log.Printf("skipping attach syscalls/%s via program %s: tracepoint not present (%v)", ev, name, err)
+			continue
+		}
+
+		l, err := link.Tracepoint(cat, ev, prog, nil)
+		if err != nil {
+			log.Printf("attach syscalls/%s via program %s failed: %v", ev, name, err)
+			continue
+		}
+		links = append(links, l)
+	}
+	defer func() {
+		for _, l := range links {
+			_ = l.Close()
+		}
+	}()
 
 	log.Printf("syscall monitor started, flushing every %ds%s. Ctrl-C to exit.", *interval, func() string {
 		if len(commFilters) > 0 { return " (filtered by comm)" }
