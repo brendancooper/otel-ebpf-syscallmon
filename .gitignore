@@ -1,1 +1,2 @@
 syscall_monitor
+syscall_monitoring.bpf.o
