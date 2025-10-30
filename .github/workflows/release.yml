@@ -25,22 +25,45 @@ jobs:
       - name: Install build dependencies
         run: |
           set -euo pipefail
+          # Speed up apt installs: disable man-db auto updates and use eatmydata + dpkg opts
+          sudo rm -f /var/lib/man-db/auto-update || true
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            clang \
-            libbpf-dev \
-            libcap-dev \
-            libelf-dev \
-            llvm \
-            make \
-            pkg-config \
-            zlib1g-dev \
-            linux-tools-common
+          sudo DEBIAN_FRONTEND=noninteractive \
+               apt-get install -y --no-install-recommends \
+               -o Dpkg::Use-Pty=0 \
+               -o DPkg::Options::="--force-confdef" \
+               -o DPkg::Options::="--force-confold" \
+               eatmydata
+
+          sudo DEBIAN_FRONTEND=noninteractive \
+               eatmydata apt-get install -y --no-install-recommends \
+               -o Dpkg::Use-Pty=0 \
+               -o DPkg::Options::="--force-confdef" \
+               -o DPkg::Options::="--force-confold" \
+               build-essential \
+               clang \
+               libbpf-dev \
+               libcap-dev \
+               libelf-dev \
+               llvm \
+               make \
+               pkg-config \
+               zlib1g-dev \
+               linux-tools-common
 
           KERNEL_RELEASE="$(uname -r)"
-          if ! sudo apt-get install -y "linux-tools-${KERNEL_RELEASE}"; then
-            sudo apt-get install -y linux-tools-generic linux-cloud-tools-generic || true
+          if ! sudo DEBIAN_FRONTEND=noninteractive \
+                  eatmydata apt-get install -y --no-install-recommends \
+                  -o Dpkg::Use-Pty=0 \
+                  -o DPkg::Options::="--force-confdef" \
+                  -o DPkg::Options::="--force-confold" \
+                  "linux-tools-${KERNEL_RELEASE}"; then
+            sudo DEBIAN_FRONTEND=noninteractive \
+                 eatmydata apt-get install -y --no-install-recommends \
+                 -o Dpkg::Use-Pty=0 \
+                 -o DPkg::Options::="--force-confdef" \
+                 -o DPkg::Options::="--force-confold" \
+                 linux-tools-generic linux-cloud-tools-generic || true
           fi
 
           BPFT_TOOL="$(find /usr/lib -maxdepth 2 -path '*/linux-tools-*' -name bpftool -print | head -n1)"
