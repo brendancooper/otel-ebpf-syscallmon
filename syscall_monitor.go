@@ -31,6 +31,7 @@ type syscallStats struct {
 	SumNs uint64
 	MaxNs uint64
 	Bytes uint64
+	Comm  [16]byte
 }
 
 type syscallKey struct {
@@ -131,6 +132,9 @@ func main() {
 	flag.StringVar(&otlpEndpoint, "otlp-endpoint", "", "Export metrics to this OTLP HTTP endpoint (e.g. http://collector:4318)")
 	var otlpDebug bool
 	flag.BoolVar(&otlpDebug, "otlp-debug", false, "Enable debug logging for OTLP exporter (logs HTTP status and body)")
+	var withArgs bool
+	flag.BoolVar(&withArgs, "with-args", false, "Include process command-line arguments from /proc/<pid>/cmdline (best-effort)")
+	flag.BoolVar(&withArgs, "a", false, "Include process command-line arguments from /proc/<pid>/cmdline (best-effort)")
 	flag.Parse()
 
 	// Bump RLIMIT_MEMLOCK for older kernels
@@ -258,7 +262,7 @@ func main() {
 	for {
 		select {
 		case <-ticker.C:
-			entries, err := collectAndClearStats(statsMap)
+			entries, err := collectAndClearStats(statsMap, withArgs)
 			if err != nil {
 				log.Printf("flush error: %v", err)
 				continue
@@ -267,11 +271,21 @@ func main() {
 				fmt.Printf("\n=== stats flush @ %s", time.Now().Format(time.RFC1123))
 				for _, e := range entries {
 					if scHasBytes(e.ID) {
-						fmt.Printf("PID=%d comm=%s call=%s count=%d avg_ms=%.3f max_ms=%.3f bytes=%d\n",
-							e.PID, e.Comm, e.Name, e.Count, e.AvgMs, e.MaxMs, e.Bytes)
+						if withArgs && e.Args != "" {
+							fmt.Printf("PID=%d comm=%s args=\"%s\" call=%s count=%d avg_ms=%.3f max_ms=%.3f bytes=%d\n",
+								e.PID, e.Comm, e.Args, e.Name, e.Count, e.AvgMs, e.MaxMs, e.Bytes)
+						} else {
+							fmt.Printf("PID=%d comm=%s call=%s count=%d avg_ms=%.3f max_ms=%.3f bytes=%d\n",
+								e.PID, e.Comm, e.Name, e.Count, e.AvgMs, e.MaxMs, e.Bytes)
+						}
 					} else {
-						fmt.Printf("PID=%d comm=%s call=%s count=%d avg_ms=%.3f max_ms=%.3f\n",
-							e.PID, e.Comm, e.Name, e.Count, e.AvgMs, e.MaxMs)
+						if withArgs && e.Args != "" {
+							fmt.Printf("PID=%d comm=%s args=\"%s\" call=%s count=%d avg_ms=%.3f max_ms=%.3f\n",
+								e.PID, e.Comm, e.Args, e.Name, e.Count, e.AvgMs, e.MaxMs)
+						} else {
+							fmt.Printf("PID=%d comm=%s call=%s count=%d avg_ms=%.3f max_ms=%.3f\n",
+								e.PID, e.Comm, e.Name, e.Count, e.AvgMs, e.MaxMs)
+						}
 					}
 				}
 			} else {
@@ -298,11 +312,14 @@ type MetricEntry struct {
 	AvgMs float64 `json:"avg_ms"`
 	MaxMs float64 `json:"max_ms"`
 	Bytes uint64  `json:"bytes,omitempty"`
+	Args  string  `json:"args,omitempty"`
 }
 
 // collectAndClearStats gathers all entries from the map, returns them and
 // deletes the underlying keys. This is used by both STDOUT and OTLP paths.
-func collectAndClearStats(m *ebpf.Map) ([]MetricEntry, error) {
+var pidArgsCache = make(map[uint32]string)
+
+func collectAndClearStats(m *ebpf.Map, withArgs bool) ([]MetricEntry, error) {
 	it := m.Iterate()
 	var key syscallKey
 	var val syscallStats
@@ -320,15 +337,29 @@ func collectAndClearStats(m *ebpf.Map) ([]MetricEntry, error) {
 		if e.v.Count > 0 {
 			avgMs = float64(e.v.SumNs) / float64(e.v.Count) / 1e6
 		}
+		// derive comm from value's 16-byte buffer captured in BPF
+		comm := commFrom16(e.v.Comm)
+		var args string
+		if withArgs {
+			if cached, ok := pidArgsCache[e.k.PID]; ok {
+				args = cached
+			} else {
+				args = readCmdline(int(e.k.PID))
+				if args != "" && args != "-" {
+					pidArgsCache[e.k.PID] = args
+				}
+			}
+		}
 		me := MetricEntry{
 			PID:   e.k.PID,
-			Comm:  readComm(int(e.k.PID)),
+			Comm:  comm,
 			Name:  scName(e.k.ID),
 			ID:    e.k.ID,
 			Count: e.v.Count,
 			AvgMs: avgMs,
 			MaxMs: float64(e.v.MaxNs) / 1e6,
 			Bytes: e.v.Bytes,
+			Args:  args,
 		}
 		out = append(out, me)
 		kcopy := e.k
@@ -443,11 +474,16 @@ func exportOTLPJSON(ctx context.Context, endpoint string, entries []MetricEntry,
 		pidVal := int64(e.PID)
 		comm := e.Comm
 		call := e.Name
-		return []otlpAttribute{
+		attrs := []otlpAttribute{
 			{Key: "pid", Value: otlpAttrValue{IntValue: &pidVal}},
 			{Key: "comm", Value: otlpAttrValue{StringValue: &comm}},
 			{Key: "call", Value: otlpAttrValue{StringValue: &call}},
 		}
+		if e.Args != "" {
+			args := e.Args
+			attrs = append(attrs, otlpAttribute{Key: "args", Value: otlpAttrValue{StringValue: &args}})
+		}
+		return attrs
 	}
 
 	// Group datapoints by metric name to reduce the number of metric objects.
@@ -552,7 +588,7 @@ func dumpAndClearStats(m *ebpf.Map) error {
 
 	// Now print and delete outside of the iterator to avoid aborting it
 	for _, e := range entries {
-		comm := readComm(int(e.k.PID))
+		comm := commFrom16(e.v.Comm)
 		avgMs := 0.0
 		if e.v.Count > 0 {
 			avgMs = float64(e.v.SumNs) / float64(e.v.Count) / 1e6
@@ -603,6 +639,16 @@ func fixed16(s string) [16]byte {
 	return b
 }
 
+// commFrom16 converts a 16-byte C-style string to Go string, stopping at first NUL.
+func commFrom16(b [16]byte) string {
+	// find first 0 byte
+	n := bytes.IndexByte(b[:], 0)
+	if n == -1 {
+		n = len(b)
+	}
+	return string(b[:n])
+}
+
 // readComm reads /proc/<pid>/comm up to 16 chars similar to C version.
 func readComm(pid int) string {
 	f, err := os.Open(filepath.Join("/proc", fmt.Sprint(pid), "comm"))
@@ -619,6 +665,34 @@ func readComm(pid int) string {
 	return line
 }
 
+// readCmdline tries to read /proc/<pid>/cmdline and return a space-separated command line.
+// Returns "-" on errors or when empty.
+func readCmdline(pid int) string {
+	data, err := os.ReadFile(filepath.Join("/proc", fmt.Sprint(pid), "cmdline"))
+	if err != nil || len(data) == 0 {
+		return "-"
+	}
+	// cmdline is NUL-separated. Trim trailing NULs, split, and join with spaces.
+	// Limit size to a reasonable length to avoid huge payloads.
+	if len(data) > 4096 {
+		data = data[:4096]
+	}
+	// ensure we don't end with partial utf-8; ignore for simplicity here.
+	parts := strings.Split(strings.TrimRight(string(data), "\x00"), "\x00")
+	// remove empty segments
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	if len(out) == 0 {
+		return "-"
+	}
+	return strings.Join(out, " ")
+}
+
 // multiFlag supports repeated -c/--comm options.
 type multiFlag []string
 
@@ -630,8 +704,8 @@ func (m *multiFlag) Set(v string) error {
 
 // Ensure struct layout matches C. Add a sanity check using binary size.
 func init() {
-	if binary.Size(syscallStats{}) != 8*4 {
-		// Four uint64 fields
+	if binary.Size(syscallStats{}) != 8*4+16 {
+		// Four uint64 fields plus 16-byte comm
 		panic("syscallStats size mismatch; check field types and packing")
 	}
 	if binary.Size(syscallKey{}) != 8 {

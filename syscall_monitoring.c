@@ -11,6 +11,7 @@ struct syscall_stats {
     __u64 sum_ns;
     __u64 max_ns;
     __u64 bytes; // bytes for sendmsg/recvmsg
+    char   comm[16]; // TASK_COMM_LEN captured at event time
 };
 
 struct syscall_key {
@@ -310,6 +311,12 @@ int exit_sendmsg(struct trace_event_raw_sys_exit *ctx) {
         __u64 bytes = (__u64)ret;
         __sync_fetch_and_add(&stats->bytes, bytes);
     }
+    // refresh comm each update to avoid relying on /proc lookups in user space
+    char cbuf[16];
+    if (bpf_get_current_comm(&cbuf, sizeof(cbuf)) == 0) {
+        // copy to map value field
+        __builtin_memcpy(&stats->comm[0], &cbuf[0], sizeof(cbuf));
+    }
     return 0;
 }
 
@@ -340,6 +347,10 @@ int exit_sendto(struct trace_event_raw_sys_exit *ctx) {
     if (ret > 0) {
         __u64 bytes = (__u64)ret;
         __sync_fetch_and_add(&stats->bytes, bytes);
+    }
+    char cbuf2[16];
+    if (bpf_get_current_comm(&cbuf2, sizeof(cbuf2)) == 0) {
+        __builtin_memcpy(&stats->comm[0], &cbuf2[0], sizeof(cbuf2));
     }
     return 0;
 }
@@ -372,6 +383,10 @@ int exit_recvmsg(struct trace_event_raw_sys_exit *ctx) {
         __u64 bytes = (__u64)ret;
         __sync_fetch_and_add(&stats->bytes, bytes);
     }
+    char cbuf3[16];
+    if (bpf_get_current_comm(&cbuf3, sizeof(cbuf3)) == 0) {
+        __builtin_memcpy(&stats->comm[0], &cbuf3[0], sizeof(cbuf3));
+    }
     return 0;
 }
 
@@ -402,6 +417,10 @@ int exit_recvfrom(struct trace_event_raw_sys_exit *ctx) {
     if (ret > 0) {
         __u64 bytes = (__u64)ret;
         __sync_fetch_and_add(&stats->bytes, bytes);
+    }
+    char cbuf4[16];
+    if (bpf_get_current_comm(&cbuf4, sizeof(cbuf4)) == 0) {
+        __builtin_memcpy(&stats->comm[0], &cbuf4[0], sizeof(cbuf4));
     }
     return 0;
 }
@@ -434,6 +453,10 @@ int exit_connect(struct trace_event_raw_sys_exit *ctx) {
         __u64 bytes = (__u64)ret;
         __sync_fetch_and_add(&stats->bytes, bytes);
     }
+    char cbuf5[16];
+    if (bpf_get_current_comm(&cbuf5, sizeof(cbuf5)) == 0) {
+        __builtin_memcpy(&stats->comm[0], &cbuf5[0], sizeof(cbuf5));
+    }
     return 0;
 }
 
@@ -464,6 +487,10 @@ int exit_close(struct trace_event_raw_sys_exit *ctx) {
     if (ret > 0) {
         __u64 bytes = (__u64)ret;
         __sync_fetch_and_add(&stats->bytes, bytes);
+    }
+    char cbuf6[16];
+    if (bpf_get_current_comm(&cbuf6, sizeof(cbuf6)) == 0) {
+        __builtin_memcpy(&stats->comm[0], &cbuf6[0], sizeof(cbuf6));
     }
     return 0;
 }
@@ -496,6 +523,10 @@ int exit_close_range(struct trace_event_raw_sys_exit *ctx) {
         __u64 bytes = (__u64)ret;
         __sync_fetch_and_add(&stats->bytes, bytes);
     }
+    char cbuf7[16];
+    if (bpf_get_current_comm(&cbuf7, sizeof(cbuf7)) == 0) {
+        __builtin_memcpy(&stats->comm[0], &cbuf7[0], sizeof(cbuf7));
+    }
     return 0;
 }
 
@@ -526,6 +557,10 @@ int exit_read(struct trace_event_raw_sys_exit *ctx) {
     if (ret > 0) {
         __u64 bytes = (__u64)ret;
         __sync_fetch_and_add(&stats->bytes, bytes);
+    }
+    char cbuf8[16];
+    if (bpf_get_current_comm(&cbuf8, sizeof(cbuf8)) == 0) {
+        __builtin_memcpy(&stats->comm[0], &cbuf8[0], sizeof(cbuf8));
     }
     return 0;
 }
@@ -558,6 +593,10 @@ int exit_readv(struct trace_event_raw_sys_exit *ctx) {
         __u64 bytes = (__u64)ret;
         __sync_fetch_and_add(&stats->bytes, bytes);
     }
+    char cbuf9[16];
+    if (bpf_get_current_comm(&cbuf9, sizeof(cbuf9)) == 0) {
+        __builtin_memcpy(&stats->comm[0], &cbuf9[0], sizeof(cbuf9));
+    }
     return 0;
 }
 
@@ -588,6 +627,10 @@ int exit_write(struct trace_event_raw_sys_exit *ctx) {
     if (ret > 0) {
         __u64 bytes = (__u64)ret;
         __sync_fetch_and_add(&stats->bytes, bytes);
+    }
+    char cbuf10[16];
+    if (bpf_get_current_comm(&cbuf10, sizeof(cbuf10)) == 0) {
+        __builtin_memcpy(&stats->comm[0], &cbuf10[0], sizeof(cbuf10));
     }
     return 0;
 }
@@ -620,6 +663,10 @@ int exit_writev(struct trace_event_raw_sys_exit *ctx) {
         __u64 bytes = (__u64)ret;
         __sync_fetch_and_add(&stats->bytes, bytes);
     }
+    char cbuf11[16];
+    if (bpf_get_current_comm(&cbuf11, sizeof(cbuf11)) == 0) {
+        __builtin_memcpy(&stats->comm[0], &cbuf11[0], sizeof(cbuf11));
+    }
     return 0;
 }
 
@@ -650,6 +697,10 @@ int exit_open(struct trace_event_raw_sys_exit *ctx) {
     if (ret > 0) {
         __u64 bytes = (__u64)ret;
         __sync_fetch_and_add(&stats->bytes, bytes);
+    }
+    char cbuf12[16];
+    if (bpf_get_current_comm(&cbuf12, sizeof(cbuf12)) == 0) {
+        __builtin_memcpy(&stats->comm[0], &cbuf12[0], sizeof(cbuf12));
     }
     return 0;
 }
@@ -682,6 +733,10 @@ int exit_openat(struct trace_event_raw_sys_exit *ctx) {
         __u64 bytes = (__u64)ret;
         __sync_fetch_and_add(&stats->bytes, bytes);
     }
+    char cbuf13[16];
+    if (bpf_get_current_comm(&cbuf13, sizeof(cbuf13)) == 0) {
+        __builtin_memcpy(&stats->comm[0], &cbuf13[0], sizeof(cbuf13));
+    }
     return 0;
 }
 
@@ -712,6 +767,10 @@ int exit_fstat(struct trace_event_raw_sys_exit *ctx) {
     if (ret > 0) {
         __u64 bytes = (__u64)ret;
         __sync_fetch_and_add(&stats->bytes, bytes);
+    }
+    char cbuf14[16];
+    if (bpf_get_current_comm(&cbuf14, sizeof(cbuf14)) == 0) {
+        __builtin_memcpy(&stats->comm[0], &cbuf14[0], sizeof(cbuf14));
     }
     return 0;
 }
@@ -744,6 +803,10 @@ int exit_fstatat(struct trace_event_raw_sys_exit *ctx) {
         __u64 bytes = (__u64)ret;
         __sync_fetch_and_add(&stats->bytes, bytes);
     }
+    char cbuf15[16];
+    if (bpf_get_current_comm(&cbuf15, sizeof(cbuf15)) == 0) {
+        __builtin_memcpy(&stats->comm[0], &cbuf15[0], sizeof(cbuf15));
+    }
     return 0;
 }
 
@@ -774,6 +837,10 @@ int exit_poll(struct trace_event_raw_sys_exit *ctx) {
     if (ret > 0) {
         __u64 bytes = (__u64)ret;
         __sync_fetch_and_add(&stats->bytes, bytes);
+    }
+    char cbuf16[16];
+    if (bpf_get_current_comm(&cbuf16, sizeof(cbuf16)) == 0) {
+        __builtin_memcpy(&stats->comm[0], &cbuf16[0], sizeof(cbuf16));
     }
     return 0;
 }
@@ -806,6 +873,10 @@ int exit_ppoll(struct trace_event_raw_sys_exit *ctx) {
         __u64 bytes = (__u64)ret;
         __sync_fetch_and_add(&stats->bytes, bytes);
     }
+    char cbuf17[16];
+    if (bpf_get_current_comm(&cbuf17, sizeof(cbuf17)) == 0) {
+        __builtin_memcpy(&stats->comm[0], &cbuf17[0], sizeof(cbuf17));
+    }
     return 0;
 }
 
@@ -836,6 +907,10 @@ int exit_epoll_wait(struct trace_event_raw_sys_exit *ctx) {
     if (ret > 0) {
         __u64 bytes = (__u64)ret;
         __sync_fetch_and_add(&stats->bytes, bytes);
+    }
+    char cbuf18[16];
+    if (bpf_get_current_comm(&cbuf18, sizeof(cbuf18)) == 0) {
+        __builtin_memcpy(&stats->comm[0], &cbuf18[0], sizeof(cbuf18));
     }
     return 0;
 }

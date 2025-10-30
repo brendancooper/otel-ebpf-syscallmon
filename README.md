@@ -50,6 +50,7 @@ Options
 - `-c`, `--comm <name>`: add a task `comm` filter (repeatable). Only processes whose `/proc/<pid>/comm` matches any supplied name will be monitored. Names are truncated to 16 bytes to match kernel TASK_COMM_LEN.
  - `--otlp-endpoint <url>`: when provided, the monitor will POST aggregated metrics as an OTLP/JSON-style payload to this HTTP endpoint instead of printing to stdout. If the URL has no path the client will POST to `/v1/metrics`. Examples: `http://collector:4318`, `https://otel-collector.example/api`.
  - `--otlp-debug`: enable additional debug logging for OTLP exports (logs the JSON payload and response status/body). Useful when configuring a collector or troubleshooting ingestion problems.
+ - `-a`, `--with-args`: include process command-line arguments (best-effort) by reading `/proc/<pid>/cmdline`. This can fail for very short-lived processes or across PID namespaces; when unavailable, args will be omitted.
 
 Example
 -------
@@ -63,6 +64,12 @@ Only monitor `sshd` and `nginx`:
 
 ```bash
 sudo ./syscall_monitor -i 5 -c sshd -c nginx
+```
+
+Include process arguments in output:
+
+```bash
+sudo ./syscall_monitor -i 5 --with-args
 ```
 
 Send metrics to an OTLP HTTP collector (instead of stdout):
