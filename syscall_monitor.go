@@ -421,11 +421,19 @@ func exportOTLPJSON(ctx context.Context, endpoint string, entries []MetricEntry,
 	now := uint64(time.Now().UnixNano())
 	start := uint64(time.Now().Add(-time.Second).UnixNano())
 
+	// Get hostname for resource attributes
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "unknown"
+	}
+
 	// build envelope with a single resource and scope
 	env := otlpEnvelope{
 		ResourceMetrics: []otlpResourceMetrics{
 			{
-				Resource: otlpResource{Attributes: []otlpAttribute{}},
+				Resource: otlpResource{Attributes: []otlpAttribute{
+					{Key: "host", Value: otlpAttrValue{StringValue: &hostname}},
+				}},
 				ScopeMetrics: []otlpScopeMetrics{
 					{
 						Scope: otlpScope{Name: "syscall_monitor", Version: "0.1"},
