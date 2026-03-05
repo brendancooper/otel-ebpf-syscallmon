@@ -432,7 +432,7 @@ func exportOTLPJSON(ctx context.Context, endpoint string, entries []MetricEntry,
 		ResourceMetrics: []otlpResourceMetrics{
 			{
 				Resource: otlpResource{Attributes: []otlpAttribute{
-					{Key: "host", Value: otlpAttrValue{StringValue: &hostname}},
+					{Key: "host.name", Value: otlpAttrValue{StringValue: &hostname}},
 				}},
 				ScopeMetrics: []otlpScopeMetrics{
 					{
