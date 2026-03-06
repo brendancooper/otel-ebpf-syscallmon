@@ -11,7 +11,7 @@ BPF_OBJ = syscall_monitoring.bpf.o
 BPF_C = syscall_monitoring.c
 USER = syscall_monitor
 
-.PHONY: all clean
+.PHONY: all clean distclean
 
 all: vmlinux.h $(BPF_OBJ) $(USER)
 
@@ -59,4 +59,7 @@ $(USER): syscall_monitor.go $(BPF_OBJ)
 	GO111MODULE=on CGO_ENABLED=0 go build -o $(USER) syscall_monitor.go
 
 clean:
-	rm -f $(BPF_OBJ) $(USER) vmlinux.h
+	rm -f $(BPF_OBJ) $(USER)
+
+distclean: clean
+	rm -f vmlinux.h
