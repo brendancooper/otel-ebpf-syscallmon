@@ -118,7 +118,7 @@ jobs:
 
       - name: Build binaries with Makefile
         run: |
-          make distclean
+          make clean
           make all
 
       - name: Upload build artifacts
