@@ -25,6 +25,8 @@ jobs:
       - name: Install build dependencies
         run: |
           set -euo pipefail
+          # Ensure 'universe' is enabled so packages like bpftool are available
+          sudo add-apt-repository -y universe || true
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
@@ -38,17 +40,51 @@ jobs:
             zlib1g-dev \
             linux-tools-common \
             linux-tools-generic \
-            linux-cloud-tools-generic
+            linux-cloud-tools-generic \
+            bpftool \
+            linux-tools-azure \
+            linux-cloud-tools-azure
 
           # Try to install kernel-specific linux-tools / linux-cloud-tools so bpftool
           # matches the currently running kernel (examples: linux-tools-6.14...-azure).
           KVER="$(uname -r)"
           echo "Detected kernel: ${KVER}"
 
+          # Try to install kernel-specific tooling. The azure kernel packages may
+          # live on the Azure mirror — add the azure archive as a fallback source
+          # so apt can find linux-tools-<kver>-azure packages used on GitHub runners.
+          CODENAME=$(lsb_release -cs)
+          sudo tee /etc/apt/sources.list.d/azure.list > /dev/null <<'APT'
+deb http://azure.archive.ubuntu.com/ubuntu ${CODENAME} main universe multiverse restricted
+deb http://azure.archive.ubuntu.com/ubuntu ${CODENAME}-updates main universe multiverse restricted
+deb http://azure.archive.ubuntu.com/ubuntu ${CODENAME}-security main universe multiverse restricted
+APT
+          sudo apt-get update || true
           if ! sudo apt-get install -y "linux-tools-${KVER}" "linux-cloud-tools-${KVER}" >/dev/null 2>&1; then
-            echo "kernel-specific tools not available for ${KVER}, installing generic azure packages as fallback"
-            sudo apt-get install -y linux-tools-azure linux-cloud-tools-azure || true
+            echo "kernel-specific tools not available for ${KVER} from configured repos, continuing with generic packages"
           fi
+
+          # If kernel-specific packages exist in the apt pool we can download the .deb
+          # and extract bpftool directly (works around unmet dependency issues).
+          set +e
+          mkdir -p /tmp/linux-tools-debs
+          pushd /tmp/linux-tools-debs >/dev/null
+          sudo apt-get download "linux-tools-${KVER}" "linux-cloud-tools-${KVER}" 2>/dev/null || true
+          # Also try downloading the azure variants
+          sudo apt-get download "linux-tools-${KVER%%-*}-azure" "linux-cloud-tools-${KVER%%-*}-azure" 2>/dev/null || true
+          # If any .deb contains bpftool, extract and install it to /usr/local/bin
+          for d in ./*.deb; do
+            [ -f "$d" ] || continue
+            dpkg-deb -x "$d" extracted || continue
+            if [ -f extracted/usr/bin/bpftool ]; then
+              sudo install -m 0755 extracted/usr/bin/bpftool /usr/local/bin/bpftool
+              echo "Installed bpftool from $d"
+              break
+            fi
+            rm -rf extracted
+          done
+          popd >/dev/null
+          set -e
 
           # Ensure bpftool is available on PATH. Search common install locations and symlink
           if command -v bpftool >/dev/null 2>&1; then
@@ -62,6 +98,23 @@ jobs:
               echo "bpftool not found after installation" >&2
               exit 1
             fi
+          fi
+
+      - name: Build bpftool from source (if missing)
+        run: |
+          set -euo pipefail
+          if command -v bpftool >/dev/null 2>&1; then
+            echo "bpftool already installed"
+            bpftool version
+          else
+            sudo apt-get update
+            sudo apt-get install -y git libssl-dev libelf-dev libelf1 || true
+            rm -rf /tmp/bpftool
+            git clone --depth 1 --recurse-submodules https://github.com/libbpf/bpftool.git /tmp/bpftool
+            cd /tmp/bpftool/src
+            make -j$(nproc)
+            sudo install -m 0755 bpftool /usr/local/bin/bpftool
+            /usr/local/bin/bpftool version
           fi
 
       - name: Build binaries with Makefile
