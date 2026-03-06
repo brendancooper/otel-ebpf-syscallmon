@@ -40,10 +40,10 @@ jobs:
             zlib1g-dev \
             linux-tools-common \
             linux-tools-generic \
-            linux-cloud-tools-generic \
-            bpftool \
-            linux-tools-azure \
-            linux-cloud-tools-azure
+            linux-cloud-tools-generic
+
+          # Try optional packages that may not be available on all runners; don't fail if missing
+          sudo apt-get install -y bpftool linux-tools-azure linux-cloud-tools-azure || true
 
           # Try to install kernel-specific linux-tools / linux-cloud-tools so bpftool
           # matches the currently running kernel (examples: linux-tools-6.14...-azure).
