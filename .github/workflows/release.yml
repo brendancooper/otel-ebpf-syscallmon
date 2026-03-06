@@ -40,10 +40,21 @@ jobs:
             linux-tools-generic \
             linux-cloud-tools-generic
 
+          # Try to install kernel-specific linux-tools / linux-cloud-tools so bpftool
+          # matches the currently running kernel (examples: linux-tools-6.14...-azure).
+          KVER="$(uname -r)"
+          echo "Detected kernel: ${KVER}"
+
+          if ! sudo apt-get install -y "linux-tools-${KVER}" "linux-cloud-tools-${KVER}" >/dev/null 2>&1; then
+            echo "kernel-specific tools not available for ${KVER}, installing generic azure packages as fallback"
+            sudo apt-get install -y linux-tools-azure linux-cloud-tools-azure || true
+          fi
+
+          # Ensure bpftool is available on PATH. Search common install locations and symlink
           if command -v bpftool >/dev/null 2>&1; then
             bpftool version
           else
-            BPFT_TOOL="$(find /usr/lib -maxdepth 3 -path '*/linux-tools-*' -name bpftool -print | head -n1)"
+            BPFT_TOOL="$(find /usr/lib -maxdepth 4 -path '*/linux-tools-*' -name bpftool -print | head -n1)"
             if [ -n "${BPFT_TOOL}" ]; then
               sudo ln -sf "${BPFT_TOOL}" /usr/local/bin/bpftool
               bpftool version
