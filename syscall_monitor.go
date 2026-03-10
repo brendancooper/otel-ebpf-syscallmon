@@ -3,26 +3,27 @@ package main
 import (
 	"bufio"
 	"context"
-	"io"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
-	"encoding/json"
 	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
 
+	"bytes"
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
-	"bytes"
 )
 
 // Keep in sync with BPF-side structs and IDs.
@@ -160,8 +161,8 @@ func main() {
 	// name differs from the simple convention (e.g. fstat -> newfstat).
 	var links []link.Link
 	exceptions := map[string]string{
-		"enter_fstat":  "sys_enter_newfstat",
-		"exit_fstat":   "sys_exit_newfstat",
+		"enter_fstat":   "sys_enter_newfstat",
+		"exit_fstat":    "sys_exit_newfstat",
 		"enter_fstatat": "sys_enter_newfstatat",
 		"exit_fstatat":  "sys_exit_newfstatat",
 	}
@@ -202,11 +203,8 @@ func main() {
 	// Convenience handles for maps we need to touch directly
 	statsMap := coll.Maps["syscall_stats_map"]
 	monMap := coll.Maps["monitor_pid_map"]
-	allowedComms := coll.Maps["allowed_comms_map"]
-	filterEnabled := coll.Maps["filter_enabled_map"]
-	if statsMap == nil || monMap == nil || allowedComms == nil || filterEnabled == nil {
-		// allowed_comms_map/filter_enabled_map may be needed only if filtering used, but assert presence like C.
-		log.Fatalf("BPF maps missing: stats:%v mon:%v comms:%v filter:%v", statsMap != nil, monMap != nil, allowedComms != nil, filterEnabled != nil)
+	if statsMap == nil || monMap == nil {
+		log.Fatalf("BPF maps missing: stats:%v mon:%v", statsMap != nil, monMap != nil)
 	}
 
 	// Set monitor PID to avoid self-monitoring (ouroborus effect)
@@ -226,23 +224,12 @@ func main() {
 		log.Printf("warning: failed to clear initial stats for self: %v", err)
 	}
 
-	// If comm filters provided, enable filtering and populate map
-	if len(commFilters) > 0 {
-		one := uint8(1)
-		if err := filterEnabled.Update(&key32, &one, ebpf.UpdateAny); err != nil {
-			log.Printf("warning: enabling comm filter failed: %v", err)
-		}
-		for _, c := range commFilters {
-			k := fixed16(c)
-			v := uint8(1)
-			if err := allowedComms.Update(&k, &v, ebpf.UpdateAny); err != nil {
-				log.Printf("warning: adding comm filter %q failed: %v", c, err)
-			}
-		}
-	}
+	commFilterSet := buildCommFilterSet(commFilters)
 
 	log.Printf("syscall monitor started, flushing every %ds%s. Ctrl-C to exit.", *interval, func() string {
-		if len(commFilters) > 0 { return " (filtered by comm)" }
+		if len(commFilterSet) > 0 {
+			return " (filtered by comm in userspace)"
+		}
 		return ""
 	}())
 
@@ -258,7 +245,7 @@ func main() {
 	for {
 		select {
 		case <-ticker.C:
-			entries, err := collectAndClearStats(statsMap)
+			entries, err := collectAndClearStats(statsMap, commFilterSet)
 			if err != nil {
 				log.Printf("flush error: %v", err)
 				continue
@@ -302,13 +289,19 @@ type MetricEntry struct {
 
 // collectAndClearStats gathers all entries from the map, returns them and
 // deletes the underlying keys. This is used by both STDOUT and OTLP paths.
-func collectAndClearStats(m *ebpf.Map) ([]MetricEntry, error) {
+func collectAndClearStats(m *ebpf.Map, commFilterSet map[string]struct{}) ([]MetricEntry, error) {
 	it := m.Iterate()
 	var key syscallKey
 	var val syscallStats
-	var entries []struct{ k syscallKey; v syscallStats }
+	var entries []struct {
+		k syscallKey
+		v syscallStats
+	}
 	for it.Next(&key, &val) {
-		entries = append(entries, struct{ k syscallKey; v syscallStats }{k: key, v: val})
+		entries = append(entries, struct {
+			k syscallKey
+			v syscallStats
+		}{k: key, v: val})
 	}
 	if err := it.Err(); err != nil {
 		return nil, err
@@ -320,9 +313,18 @@ func collectAndClearStats(m *ebpf.Map) ([]MetricEntry, error) {
 		if e.v.Count > 0 {
 			avgMs = float64(e.v.SumNs) / float64(e.v.Count) / 1e6
 		}
+		comm := readComm(int(e.k.PID))
+		if len(commFilterSet) > 0 {
+			if _, ok := commFilterSet[comm]; !ok {
+				kcopy := e.k
+				_ = m.Delete(&kcopy)
+				continue
+			}
+		}
+
 		me := MetricEntry{
 			PID:   e.k.PID,
-			Comm:  readComm(int(e.k.PID)),
+			Comm:  comm,
 			Name:  scName(e.k.ID),
 			ID:    e.k.ID,
 			Count: e.v.Count,
@@ -337,6 +339,35 @@ func collectAndClearStats(m *ebpf.Map) ([]MetricEntry, error) {
 	return out, nil
 }
 
+func buildCommFilterSet(filters []string) map[string]struct{} {
+	if len(filters) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(filters))
+	for _, f := range filters {
+		f = strings.TrimSpace(f)
+		if f == "" {
+			continue
+		}
+		if len(f) > 16 {
+			f = f[:16]
+		}
+		set[f] = struct{}{}
+	}
+	if len(set) == 0 {
+		return nil
+	}
+
+	var names []string
+	for name := range set {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	log.Printf("comm filter targets (userspace): %s", strings.Join(names, ", "))
+
+	return set
+}
+
 // exportOTLPJSON sends an OTLP/JSON-like payload to the provided endpoint.
 // The target endpoint is expected to be an OTLP-compatible HTTP collector
 // accepting JSON metrics. We construct a simple JSON array of MetricEntry
@@ -349,7 +380,7 @@ type otlpEnvelope struct {
 }
 
 type otlpResourceMetrics struct {
-	Resource     otlpResource   `json:"resource"`
+	Resource     otlpResource       `json:"resource"`
 	ScopeMetrics []otlpScopeMetrics `json:"scopeMetrics"`
 }
 
@@ -358,7 +389,7 @@ type otlpResource struct {
 }
 
 type otlpScopeMetrics struct {
-	Scope   otlpScope `json:"scope"`
+	Scope   otlpScope    `json:"scope"`
 	Metrics []otlpMetric `json:"metrics"`
 }
 
@@ -368,10 +399,10 @@ type otlpScope struct {
 }
 
 type otlpMetric struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description,omitempty"`
-	Unit        string      `json:"unit,omitempty"`
-	Gauge       *otlpGauge  `json:"gauge,omitempty"`
+	Name        string     `json:"name"`
+	Description string     `json:"description,omitempty"`
+	Unit        string     `json:"unit,omitempty"`
+	Gauge       *otlpGauge `json:"gauge,omitempty"`
 }
 
 type otlpGauge struct {
@@ -387,13 +418,13 @@ type otlpGaugeDP struct {
 }
 
 type otlpAttribute struct {
-	Key   string         `json:"key"`
-	Value otlpAttrValue  `json:"value"`
+	Key   string        `json:"key"`
+	Value otlpAttrValue `json:"value"`
 }
 
 type otlpAttrValue struct {
-	StringValue *string  `json:"stringValue,omitempty"`
-	IntValue    *int64   `json:"intValue,omitempty"`
+	StringValue *string `json:"stringValue,omitempty"`
+	IntValue    *int64  `json:"intValue,omitempty"`
 }
 
 // exportOTLPJSON constructs a spec-compliant OTLP/JSON envelope with Gauges
@@ -436,7 +467,7 @@ func exportOTLPJSON(ctx context.Context, endpoint string, entries []MetricEntry,
 				}},
 				ScopeMetrics: []otlpScopeMetrics{
 					{
-						Scope: otlpScope{Name: "syscall_monitor", Version: "0.1"},
+						Scope:   otlpScope{Name: "syscall_monitor", Version: "0.1"},
 						Metrics: []otlpMetric{},
 					},
 				},
@@ -546,13 +577,16 @@ func dumpAndClearStats(m *ebpf.Map) error {
 	it := m.Iterate()
 	var key syscallKey
 	var val syscallStats
-	var entries []struct{
+	var entries []struct {
 		k syscallKey
 		v syscallStats
 	}
 	for it.Next(&key, &val) {
 		// copy key/val because iterator reuses the memory
-		entries = append(entries, struct{ k syscallKey; v syscallStats }{k: key, v: val})
+		entries = append(entries, struct {
+			k syscallKey
+			v syscallStats
+		}{k: key, v: val})
 	}
 	if err := it.Err(); err != nil {
 		return err
@@ -602,13 +636,6 @@ func clearStatsForPID(m *ebpf.Map, pid uint32) error {
 		_ = m.Delete(&kk)
 	}
 	return nil
-}
-
-// fixed16 returns a 16-byte array filled with the string bytes, truncated or zero-padded.
-func fixed16(s string) [16]byte {
-	var b [16]byte
-	copy(b[:], []byte(s))
-	return b
 }
 
 // readComm reads /proc/<pid>/comm up to 16 chars similar to C version.
