@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -40,6 +41,8 @@ type syscallKey struct {
 }
 
 const (
+	syntheticCallName = "noop"
+
 	scSendmsg   = 1
 	scSendto    = 2
 	scRecvmsg   = 3
@@ -245,7 +248,7 @@ func main() {
 	for {
 		select {
 		case <-ticker.C:
-			entries, err := collectAndClearStats(statsMap, commFilterSet)
+			entries, err := collectAndClearStats(statsMap, commFilterSet, self)
 			if err != nil {
 				log.Printf("flush error: %v", err)
 				continue
@@ -253,7 +256,9 @@ func main() {
 			if otlpEndpoint == "" {
 				fmt.Printf("\n=== stats flush @ %s", time.Now().Format(time.RFC1123))
 				for _, e := range entries {
-					if scHasBytes(e.ID) {
+					if e.SyntheticZero {
+						fmt.Printf("PID=%d comm=%s call=%s count=0\n", e.PID, e.Comm, e.Name)
+					} else if scHasBytes(e.ID) {
 						fmt.Printf("PID=%d comm=%s call=%s count=%d avg_ms=%.3f max_ms=%.3f bytes=%d\n",
 							e.PID, e.Comm, e.Name, e.Count, e.AvgMs, e.MaxMs, e.Bytes)
 					} else {
@@ -277,19 +282,21 @@ func main() {
 
 // MetricEntry is a serializable representation of stats per PID/syscall.
 type MetricEntry struct {
-	PID   uint32  `json:"pid"`
-	Comm  string  `json:"comm"`
-	Name  string  `json:"call"`
-	ID    uint32  `json:"-"`
-	Count uint64  `json:"count"`
-	AvgMs float64 `json:"avg_ms"`
-	MaxMs float64 `json:"max_ms"`
-	Bytes uint64  `json:"bytes,omitempty"`
+	PID           uint32  `json:"pid"`
+	Comm          string  `json:"comm"`
+	Name          string  `json:"call"`
+	ID            uint32  `json:"-"`
+	Count         uint64  `json:"count"`
+	AvgMs         float64 `json:"avg_ms"`
+	MaxMs         float64 `json:"max_ms"`
+	Bytes         uint64  `json:"bytes,omitempty"`
+	SyntheticZero bool    `json:"-"`
 }
 
 // collectAndClearStats gathers all entries from the map, returns them and
-// deletes the underlying keys. This is used by both STDOUT and OTLP paths.
-func collectAndClearStats(m *ebpf.Map, commFilterSet map[string]struct{}) ([]MetricEntry, error) {
+// deletes the underlying keys. When filtering is active, it also adds a
+// process-level zero entry for each matching live process with no BPF data.
+func collectAndClearStats(m *ebpf.Map, commFilterSet map[string]struct{}, monitorPID uint32) ([]MetricEntry, error) {
 	it := m.Iterate()
 	var key syscallKey
 	var val syscallStats
@@ -308,6 +315,7 @@ func collectAndClearStats(m *ebpf.Map, commFilterSet map[string]struct{}) ([]Met
 	}
 
 	var out []MetricEntry
+	activePIDs := make(map[uint32]struct{})
 	for _, e := range entries {
 		avgMs := 0.0
 		if e.v.Count > 0 {
@@ -333,10 +341,87 @@ func collectAndClearStats(m *ebpf.Map, commFilterSet map[string]struct{}) ([]Met
 			Bytes: e.v.Bytes,
 		}
 		out = append(out, me)
+		activePIDs[e.k.PID] = struct{}{}
 		kcopy := e.k
 		_ = m.Delete(&kcopy)
 	}
+
+	if len(commFilterSet) > 0 {
+		matchingPIDs, err := discoverMatchingProcesses("/proc", commFilterSet, monitorPID)
+		if err != nil {
+			return nil, fmt.Errorf("discover matching processes: %w", err)
+		}
+		out = appendMissingProcessZeros(out, matchingPIDs, activePIDs)
+	}
+	sortMetricEntries(out)
 	return out, nil
+}
+
+// discoverMatchingProcesses returns live processes under procRoot whose comm is
+// in filterSet. Individual read failures are expected when processes exit while
+// /proc is scanned and are ignored; an unreadable proc root is returned as an
+// error because it prevents reliable filtered-process reporting.
+func discoverMatchingProcesses(procRoot string, filterSet map[string]struct{}, monitorPID uint32) (map[uint32]string, error) {
+	entries, err := os.ReadDir(procRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	matching := make(map[uint32]string)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		pid64, err := strconv.ParseUint(entry.Name(), 10, 32)
+		if err != nil {
+			continue
+		}
+		pid := uint32(pid64)
+		if pid == monitorPID {
+			continue
+		}
+		comm, err := readCommAt(procRoot, pid)
+		if err != nil {
+			continue
+		}
+		if _, ok := filterSet[comm]; ok {
+			matching[pid] = comm
+		}
+	}
+	return matching, nil
+}
+
+// appendMissingProcessZeros adds one process-level zero entry for each live
+// matching PID with no accepted BPF statistics in the current interval.
+func appendMissingProcessZeros(entries []MetricEntry, matchingPIDs map[uint32]string, activePIDs map[uint32]struct{}) []MetricEntry {
+	pids := make([]int, 0, len(matchingPIDs))
+	for pid := range matchingPIDs {
+		if _, active := activePIDs[pid]; !active {
+			pids = append(pids, int(pid))
+		}
+	}
+	sort.Ints(pids)
+	for _, pid := range pids {
+		entries = append(entries, MetricEntry{
+			PID:           uint32(pid),
+			Comm:          matchingPIDs[uint32(pid)],
+			Name:          syntheticCallName,
+			SyntheticZero: true,
+		})
+	}
+	return entries
+}
+
+func sortMetricEntries(entries []MetricEntry) {
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].PID != entries[j].PID {
+			return entries[i].PID < entries[j].PID
+		}
+		if entries[i].SyntheticZero != entries[j].SyntheticZero {
+			return !entries[i].SyntheticZero
+		}
+		return entries[i].ID < entries[j].ID
+	})
 }
 
 func buildCommFilterSet(filters []string) map[string]struct{} {
@@ -482,6 +567,9 @@ func exportOTLPJSON(ctx context.Context, endpoint string, entries []MetricEntry,
 		pidVal := int64(e.PID)
 		comm := e.Comm
 		call := e.Name
+		if e.SyntheticZero {
+			call = syntheticCallName
+		}
 		return []otlpAttribute{
 			{Key: "pid", Value: otlpAttrValue{IntValue: &pidVal}},
 			{Key: "comm", Value: otlpAttrValue{StringValue: &comm}},
@@ -505,6 +593,9 @@ func exportOTLPJSON(ctx context.Context, endpoint string, entries []MetricEntry,
 
 		countVal := int64(e.Count)
 		addDP("syscall_count", "count of syscalls", "count", otlpGaugeDP{Attributes: attrs, StartTimeUnixNano: start, TimeUnixNano: now, AsInt: &countVal})
+		if e.SyntheticZero {
+			continue
+		}
 
 		avg := e.AvgMs
 		addDP("syscall_avg_ms", "average syscall latency in ms", "ms", otlpGaugeDP{Attributes: attrs, StartTimeUnixNano: start, TimeUnixNano: now, AsDouble: &avg})
@@ -640,18 +731,32 @@ func clearStatsForPID(m *ebpf.Map, pid uint32) error {
 
 // readComm reads /proc/<pid>/comm up to 16 chars similar to C version.
 func readComm(pid int) string {
-	f, err := os.Open(filepath.Join("/proc", fmt.Sprint(pid), "comm"))
+	comm, err := readCommAt("/proc", uint32(pid))
 	if err != nil {
 		return "-"
 	}
+	return comm
+}
+
+func readCommAt(procRoot string, pid uint32) (string, error) {
+	f, err := os.Open(filepath.Join(procRoot, strconv.FormatUint(uint64(pid), 10), "comm"))
+	if err != nil {
+		return "", err
+	}
 	defer f.Close()
-	rd := bufio.NewReader(f)
-	line, _ := rd.ReadString('\n')
+
+	line, err := bufio.NewReader(f).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
 	line = strings.TrimSpace(line)
 	if len(line) > 16 {
 		line = line[:16]
 	}
-	return line
+	if line == "" {
+		return "", errors.New("empty comm")
+	}
+	return line, nil
 }
 
 // multiFlag supports repeated -c/--comm options.
